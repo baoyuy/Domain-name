@@ -1,32 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="/opt/oneproxy"
-DATA_DIR="/opt/oneproxy/data"
-CADDY_SITES_DIR="/etc/caddy/sites-enabled"
+NGINX_SITES_AVAILABLE="/etc/nginx/sites-available"
+NGINX_SITES_ENABLED="/etc/nginx/sites-enabled"
+
+DOMAIN="${1:-}"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "Please run as root: sudo bash uninstall.sh"
+  echo "请使用 root 运行，例如：sudo bash uninstall.sh your-domain.com"
   exit 1
 fi
 
-echo "[oneproxy] This will remove oneproxy files, data, and generated Caddy site configs."
-read -r -p "[oneproxy] Continue? [y/N]: " CONFIRM
+if [[ -z "${DOMAIN}" ]]; then
+  echo "用法: sudo bash uninstall.sh your-domain.com"
+  exit 1
+fi
+
+SITE_FILE="${NGINX_SITES_AVAILABLE}/${DOMAIN}.conf"
+SITE_LINK="${NGINX_SITES_ENABLED}/${DOMAIN}.conf"
+
+read -r -p "[oneproxy] 这会删除 ${DOMAIN} 的 Nginx 配置，并尝试删除对应证书。是否继续？[y/N]: " CONFIRM
 
 if [[ "${CONFIRM,,}" != "y" && "${CONFIRM,,}" != "yes" ]]; then
-  echo "[oneproxy] Cancelled."
+  echo "[oneproxy] 已取消。"
   exit 0
 fi
 
-rm -f /usr/local/bin/oneproxy
-rm -rf "$APP_DIR"
+rm -f "${SITE_LINK}" "${SITE_FILE}"
 
-if [[ -d "$CADDY_SITES_DIR" ]]; then
-  find "$CADDY_SITES_DIR" -maxdepth 1 -type f -name "*.caddy" -delete
+if command -v certbot >/dev/null 2>&1; then
+  certbot delete --cert-name "${DOMAIN}" --non-interactive >/dev/null 2>&1 || true
 fi
 
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl reload caddy || true
+if command -v nginx >/dev/null 2>&1; then
+  nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
 fi
 
-echo "[oneproxy] Uninstall complete."
+echo "[oneproxy] 已删除 ${DOMAIN} 的配置。"

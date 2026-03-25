@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 NGINX_SITES_AVAILABLE="/etc/nginx/sites-available"
 NGINX_SITES_ENABLED="/etc/nginx/sites-enabled"
@@ -10,6 +10,15 @@ DOMAINS="${ONEPROXY_DOMAIN:-}"
 UPSTREAM="${ONEPROXY_UPSTREAM:-}"
 EMAIL="${ONEPROXY_EMAIL:-}"
 TTY_FD=""
+
+SITE_NAME=""
+SITE_FILE=""
+SITE_LINK=""
+CONFIG_WRITTEN="0"
+DEPLOY_COMPLETED="0"
+BACKUP_DIR=""
+HAD_OLD_FILE="0"
+HAD_OLD_LINK="0"
 
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
@@ -55,7 +64,7 @@ error() {
 }
 
 kv() {
-  printf '%b%-8s%b %s\n' "${COLOR_DIM}" "$1" "${COLOR_RESET}" "$2"
+  printf '%b%-10s%b %s\n' "${COLOR_DIM}" "$1" "${COLOR_RESET}" "$2"
 }
 
 has_cmd() {
@@ -122,7 +131,7 @@ ensure_tty_input() {
     return
   fi
 
-  error "当前执行环境无法交互输入，请改用参数方式执行："
+  error "当前执行环境无法交互输入，请改用参数方式执行。"
   printf '%s\n' "curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000 --email admin@example.com" >&2
   exit 1
 }
@@ -272,38 +281,93 @@ joined_domains() {
   normalize_domains "$1" | paste -sd' ' -
 }
 
+prepare_site_paths() {
+  SITE_NAME="$(site_id "${DOMAINS}")"
+  SITE_FILE="${NGINX_SITES_AVAILABLE}/${SITE_NAME}.conf"
+  SITE_LINK="${NGINX_SITES_ENABLED}/${SITE_NAME}.conf"
+}
+
 ensure_nginx_layout() {
   mkdir -p "${NGINX_SITES_AVAILABLE}" "${NGINX_SITES_ENABLED}"
 }
 
-remove_site_config() {
-  local site_name file_path enabled_path
+backup_existing_site_config() {
+  BACKUP_DIR="$(mktemp -d /tmp/oneproxy-backup.XXXXXX)"
+  HAD_OLD_FILE="0"
+  HAD_OLD_LINK="0"
 
-  site_name="$(site_id "${DOMAINS}")"
-  file_path="${NGINX_SITES_AVAILABLE}/${site_name}.conf"
-  enabled_path="${NGINX_SITES_ENABLED}/${site_name}.conf"
+  if [[ -f "${SITE_FILE}" ]]; then
+    cp "${SITE_FILE}" "${BACKUP_DIR}/site.conf"
+    HAD_OLD_FILE="1"
+  fi
 
-  rm -f "${enabled_path}" 2>/dev/null || true
-  rm -f "${file_path}" 2>/dev/null || true
+  if [[ -L "${SITE_LINK}" ]]; then
+    readlink "${SITE_LINK}" > "${BACKUP_DIR}/site.link"
+    HAD_OLD_LINK="1"
+  fi
 }
 
+restore_site_backup() {
+  if [[ -z "${BACKUP_DIR}" || ! -d "${BACKUP_DIR}" ]]; then
+    rm -f "${SITE_LINK}" "${SITE_FILE}" 2>/dev/null || true
+    return
+  fi
+
+  rm -f "${SITE_LINK}" "${SITE_FILE}" 2>/dev/null || true
+
+  if [[ "${HAD_OLD_FILE}" == "1" && -f "${BACKUP_DIR}/site.conf" ]]; then
+    cp "${BACKUP_DIR}/site.conf" "${SITE_FILE}"
+  fi
+
+  if [[ "${HAD_OLD_LINK}" == "1" && -f "${BACKUP_DIR}/site.link" ]]; then
+    ln -sf "$(cat "${BACKUP_DIR}/site.link")" "${SITE_LINK}"
+  fi
+}
+
+cleanup_backup_dir() {
+  if [[ -n "${BACKUP_DIR}" && -d "${BACKUP_DIR}" ]]; then
+    rm -rf "${BACKUP_DIR}" 2>/dev/null || true
+  fi
+}
+
+rollback_site_config() {
+  if [[ "${CONFIG_WRITTEN}" != "1" || "${DEPLOY_COMPLETED}" == "1" ]]; then
+    cleanup_backup_dir
+    return
+  fi
+
+  warn "检测到部署中断，正在回滚站点配置"
+  restore_site_backup
+
+  if has_cmd nginx && nginx -t >/tmp/oneproxy_rollback.out 2>/tmp/oneproxy_rollback.err; then
+    systemctl reload nginx >/dev/null 2>&1 || true
+    success "站点配置已回滚"
+  else
+    error "自动回滚后 Nginx 配置校验失败，请手动检查。"
+    sed -n '1,20p' /tmp/oneproxy_rollback.err >&2 || true
+  fi
+
+  rm -f /tmp/oneproxy_rollback.out /tmp/oneproxy_rollback.err
+  cleanup_backup_dir
+}
+
+on_error() {
+  local exit_code="$1"
+  rollback_site_config
+  exit "${exit_code}"
+}
+
+trap 'on_error $?' ERR
+
 write_site_config() {
-  local domains_csv="$1"
-  local upstream="$2"
-  local site_name file_path enabled_path
-
-  site_name="$(site_id "${domains_csv}")"
-  file_path="${NGINX_SITES_AVAILABLE}/${site_name}.conf"
-  enabled_path="${NGINX_SITES_ENABLED}/${site_name}.conf"
-
-  cat > "${file_path}" <<EOF
+  cat > "${SITE_FILE}" <<EOF
 server {
     listen 80;
     listen [::]:80;
-    server_name $(joined_domains "${domains_csv}");
+    server_name $(joined_domains "${DOMAINS}");
 
     location / {
-        proxy_pass ${upstream};
+        proxy_pass ${UPSTREAM};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -315,7 +379,14 @@ server {
 }
 EOF
 
-  ln -sf "${file_path}" "${enabled_path}"
+  ln -sf "${SITE_FILE}" "${SITE_LINK}"
+  CONFIG_WRITTEN="1"
+
+  if [[ "${HAD_OLD_FILE}" == "1" || "${HAD_OLD_LINK}" == "1" ]]; then
+    warn "检测到已有同名站点配置，本次已先做备份，成功后将覆盖旧配置"
+  else
+    success "已创建新的 HTTP 站点配置"
+  fi
 }
 
 validate_nginx() {
@@ -437,7 +508,6 @@ resolve_domain() {
 }
 
 check_domains() {
-  local domains_csv="$1"
   local server_ips resolved ok
   local has_failure="0"
   server_ips="$(collect_server_ips)"
@@ -468,16 +538,15 @@ check_domains() {
       has_failure="1"
     fi
     echo
-  done < <(normalize_domains "${domains_csv}")
+  done < <(normalize_domains "${DOMAINS}")
 
   return "${has_failure}"
 }
 
 check_upstream() {
-  local upstream="$1"
   section "检查源站连通性"
 
-  if curl -k -I -L --max-time 8 "${upstream}" >/tmp/oneproxy_upstream_check.out 2>/tmp/oneproxy_upstream_check.err; then
+  if curl -k -I -L --max-time 8 "${UPSTREAM}" >/tmp/oneproxy_upstream_check.out 2>/tmp/oneproxy_upstream_check.err; then
     success "源站可访问"
     sed -n '1p' /tmp/oneproxy_upstream_check.out || true
     rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
@@ -491,9 +560,17 @@ check_upstream() {
   return 1
 }
 
-build_certbot_domain_args() {
+build_certbot_args() {
+  CERTBOT_ARGS=(--nginx --redirect --non-interactive --agree-tos)
+
+  if [[ -n "${EMAIL}" ]]; then
+    CERTBOT_ARGS+=(--email "${EMAIL}")
+  else
+    CERTBOT_ARGS+=(--register-unsafely-without-email)
+  fi
+
   while IFS= read -r domain; do
-    [[ -n "${domain}" ]] && printf -- "-d %s " "${domain}"
+    [[ -n "${domain}" ]] && CERTBOT_ARGS+=(-d "${domain}")
   done < <(normalize_domains "${DOMAINS}")
 }
 
@@ -518,18 +595,22 @@ summarize_certbot_failure() {
   error "HTTPS 申请失败。"
 }
 
+cleanup_failed_certificate() {
+  local primary_domain
+  primary_domain="$(first_domain "${DOMAINS}")"
+
+  if [[ -n "${primary_domain}" && -d "/etc/letsencrypt/live/${primary_domain}" ]]; then
+    certbot delete --cert-name "${primary_domain}" --non-interactive >/dev/null 2>&1 || true
+  fi
+}
+
 enable_https() {
-  local certbot_domain_args certbot_email_args
+  local -a CERTBOT_ARGS
   section "申请 HTTPS 证书"
 
-  certbot_domain_args="$(build_certbot_domain_args)"
-  if [[ -n "${EMAIL}" ]]; then
-    certbot_email_args="--email ${EMAIL}"
-  else
-    certbot_email_args="--register-unsafely-without-email"
-  fi
+  build_certbot_args
 
-  if eval "certbot --nginx --redirect --non-interactive --agree-tos ${certbot_email_args} ${certbot_domain_args}" >/tmp/oneproxy_certbot.out 2>/tmp/oneproxy_certbot.err; then
+  if certbot "${CERTBOT_ARGS[@]}" >/tmp/oneproxy_certbot.out 2>/tmp/oneproxy_certbot.err; then
     success "HTTPS 证书申请成功，已自动配置 80 -> 443"
     rm -f /tmp/oneproxy_certbot.out /tmp/oneproxy_certbot.err
     return
@@ -537,20 +618,34 @@ enable_https() {
 
   summarize_certbot_failure
   warn "正在回滚刚写入的 HTTP 配置"
-  remove_site_config
-  if nginx -t >/tmp/oneproxy_nginx_rollback.out 2>/tmp/oneproxy_nginx_rollback.err; then
-    systemctl reload nginx >/dev/null 2>&1 || true
-    success "HTTP 配置已回滚"
-  else
-    error "回滚后 Nginx 配置校验失败，请手动检查。"
-    sed -n '1,20p' /tmp/oneproxy_nginx_rollback.err >&2 || true
-  fi
-  rm -f /tmp/oneproxy_nginx_rollback.out /tmp/oneproxy_nginx_rollback.err
+  cleanup_failed_certificate
+  rollback_site_config
   echo >&2
   warn "下面是 Certbot 原始输出："
   sed -n '1,40p' /tmp/oneproxy_certbot.err >&2 || true
   rm -f /tmp/oneproxy_certbot.out /tmp/oneproxy_certbot.err
   exit 1
+}
+
+validate_final_access() {
+  local primary_domain http_status https_status
+  primary_domain="$(first_domain "${DOMAINS}")"
+
+  section "最终访问验证"
+
+  http_status="$(curl -I --max-time 15 -o /dev/null -s -w '%{http_code}' "http://${primary_domain}" || true)"
+  https_status="$(curl -I --max-time 15 -o /dev/null -s -w '%{http_code}' "https://${primary_domain}" || true)"
+
+  kv "HTTP:" "${http_status:-000}"
+  kv "HTTPS:" "${https_status:-000}"
+
+  if [[ "${https_status}" =~ ^(200|301|302|308)$ ]]; then
+    success "最终访问验证通过"
+    return
+  fi
+
+  warn "最终访问验证未通过，但配置和证书已完成。"
+  warn "这通常意味着外部网络、防火墙或 CDN 仍有拦截。"
 }
 
 cleanup_legacy_files() {
@@ -564,7 +659,7 @@ print_finish() {
   printf '\n%b[oneproxy] 部署完成%b\n' "${COLOR_GREEN}${COLOR_BOLD}" "${COLOR_RESET}"
   kv "域名:" "${DOMAINS}"
   kv "源站:" "${UPSTREAM}"
-  kv "HTTP配置:" "${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf"
+  kv "HTTP配置:" "${SITE_FILE}"
   kv "HTTPS:" "已开启"
   echo
   printf '%s\n' "以后如果要新增或修改域名，重新执行同一条命令即可。"
@@ -604,6 +699,7 @@ main() {
   fi
 
   UPSTREAM="$(normalize_upstream "${UPSTREAM}")"
+  prepare_site_paths
 
   section "部署信息"
   kv "域名:" "${DOMAINS}"
@@ -615,10 +711,10 @@ main() {
   install_nginx "${pm}"
   install_certbot "${pm}"
 
-  if check_domains "${DOMAINS}"; then
+  if check_domains; then
     domain_check_ok="1"
   fi
-  if check_upstream "${UPSTREAM}"; then
+  if check_upstream; then
     upstream_check_ok="1"
   fi
 
@@ -629,13 +725,17 @@ main() {
   fi
 
   ensure_nginx_layout
-  write_site_config "${DOMAINS}" "${UPSTREAM}"
+  backup_existing_site_config
+  write_site_config
   validate_nginx
   reload_nginx
   enable_https
   validate_nginx
   reload_nginx
+  validate_final_access
   cleanup_legacy_files
+  cleanup_backup_dir
+  DEPLOY_COMPLETED="1"
   print_finish
 
   if [[ -n "${TTY_FD}" ]]; then
