@@ -336,6 +336,7 @@ resolve_domain() {
 check_domains() {
   local domains_csv="$1"
   local local_ips resolved ok
+  local has_failure="0"
   local_ips="$(get_local_ips)"
 
   section "检查域名解析"
@@ -361,9 +362,12 @@ check_domains() {
       echo "结果: 正常"
     else
       echo "结果: 异常，域名暂未解析到当前服务器"
+      has_failure="1"
     fi
     echo
   done < <(normalize_domains "${domains_csv}")
+
+  return "${has_failure}"
 }
 
 check_upstream() {
@@ -373,13 +377,15 @@ check_upstream() {
   if curl -k -I -L --max-time 8 "${upstream}" >/tmp/oneproxy_upstream_check.out 2>/tmp/oneproxy_upstream_check.err; then
     log "源站可访问"
     sed -n '1p' /tmp/oneproxy_upstream_check.out || true
+    rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
+    return 0
   else
     echo "[oneproxy] 源站检测失败" >&2
     sed -n '1,5p' /tmp/oneproxy_upstream_check.err >&2 || true
     echo "请确认源站已启动、端口已监听、协议填写正确。" >&2
+    rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
+    return 1
   fi
-
-  rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
 }
 
 cleanup_legacy_files() {
@@ -401,8 +407,28 @@ print_finish() {
 EOF
 }
 
+print_partial_failure() {
+  cat <<EOF
+
+[oneproxy] 配置已写入，但部署未通过最终检查
+域名    : ${DOMAINS}
+源站    : ${UPSTREAM}
+配置文件: ${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf
+
+失败原因通常是：
+- 域名还没有解析到当前服务器
+- 源站服务未启动
+- 源站端口未监听
+- 防火墙未放行
+
+请先修复上面的检查项，再重新执行同一条命令。
+EOF
+}
+
 main() {
   local pm
+  local domain_check_ok="0"
+  local upstream_check_ok="0"
 
   parse_args "$@"
   prompt_if_missing
@@ -431,10 +457,20 @@ main() {
   write_site_config "${DOMAINS}" "${UPSTREAM}"
   validate_nginx
   reload_nginx
-  check_domains "${DOMAINS}"
-  check_upstream "${UPSTREAM}"
+  if check_domains "${DOMAINS}"; then
+    domain_check_ok="1"
+  fi
+  if check_upstream "${UPSTREAM}"; then
+    upstream_check_ok="1"
+  fi
   cleanup_legacy_files
-  print_finish
+
+  if [[ "${domain_check_ok}" == "1" && "${upstream_check_ok}" == "1" ]]; then
+    print_finish
+  else
+    print_partial_failure >&2
+    exit 1
+  fi
 
   if [[ -n "${TTY_FD}" ]]; then
     exec 3<&-

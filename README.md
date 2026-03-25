@@ -34,6 +34,8 @@ curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh 
 8. 自动检查源站是否可连通
 9. 清理旧版本残留的项目目录和无用文件
 
+如果域名解析检查或源站连通性检查失败，脚本会返回失败状态，不会把这次执行标记为“部署完成”。
+
 ## 执行结果
 
 成功后服务器上只保留这些真正有用的内容：
