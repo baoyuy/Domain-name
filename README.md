@@ -68,6 +68,6 @@ curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh 
 ## 说明
 
 - 域名必须先解析到服务器公网 IP，Caddy 才能正常申请 HTTPS 证书
-- 如果 Caddy 配置有问题，脚本会直接输出 `caddy validate` 和 `systemctl/journalctl` 的错误摘要
+- 如果 Caddy 配置或启动有问题，脚本会优先给出中文错误归纳和建议，再附上 `systemctl/journalctl` 原始摘要
 - 如果源站没启动、端口没监听、或防火墙没放行，脚本会提示异常
 - 如果你后续还要新增别的域名，重新执行同一条命令即可

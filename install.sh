@@ -276,7 +276,9 @@ reload_caddy() {
     return
   fi
 
-  echo "[oneproxy] Caddy 启动失败，下面是诊断信息：" >&2
+  summarize_caddy_failure
+  echo >&2
+  echo "[oneproxy] 下面是原始诊断信息：" >&2
   echo >&2
   echo "[systemctl status]" >&2
   systemctl --no-pager --full status caddy 2>&1 | tail -n 20 >&2 || true
@@ -284,6 +286,62 @@ reload_caddy() {
   echo "[journalctl]" >&2
   journalctl --no-pager -u caddy -n 20 2>&1 >&2 || true
   exit 1
+}
+
+detect_port_owner() {
+  local port="$1"
+
+  if has_cmd ss; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null | tail -n +2
+    return
+  fi
+
+  if has_cmd lsof; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null
+    return
+  fi
+}
+
+summarize_caddy_failure() {
+  local status_text journal_text combined
+
+  status_text="$(systemctl --no-pager --full status caddy 2>&1 || true)"
+  journal_text="$(journalctl --no-pager -u caddy -n 20 2>&1 || true)"
+  combined="${status_text}"$'\n'"${journal_text}"
+
+  if echo "${combined}" | grep -qi "bind: address already in use"; then
+    echo "[oneproxy] Caddy 启动失败：443 端口已被其他程序占用。" >&2
+    echo "可能原因：" >&2
+    echo "1. 服务器上已经有 Nginx、Apache、宝塔、其他 Caddy 或面板服务在监听 443" >&2
+    echo "2. 你之前部署过 HTTPS 服务，但旧服务没有停掉" >&2
+    echo >&2
+    echo "建议处理：" >&2
+    echo "- 先查看是谁占用了 443 端口" >&2
+    echo "- 停掉占用 443 的旧服务后，再重新执行当前命令" >&2
+    echo >&2
+    echo "[443 端口占用情况]" >&2
+    detect_port_owner 443 >&2 || echo "无法自动识别占用进程，请手动执行: ss -ltnp | grep :443" >&2
+    return
+  fi
+
+  if echo "${combined}" | grep -qi "bind: permission denied"; then
+    echo "[oneproxy] Caddy 启动失败：监听端口时权限不足。" >&2
+    echo "建议处理：" >&2
+    echo "- 确认脚本是用 root 或 sudo 执行的" >&2
+    echo "- 确认系统安全策略没有阻止 Caddy 监听 80/443" >&2
+    return
+  fi
+
+  if echo "${combined}" | grep -qi "certificate"; then
+    echo "[oneproxy] Caddy 启动失败：可能与证书申请或 TLS 配置有关。" >&2
+    echo "建议处理：" >&2
+    echo "- 确认域名已经解析到当前服务器公网 IP" >&2
+    echo "- 确认 80 和 443 端口已对外放行" >&2
+    return
+  fi
+
+  echo "[oneproxy] Caddy 启动失败。" >&2
+  echo "脚本暂时无法自动归类这个错误，请查看下面的原始诊断信息。" >&2
 }
 
 get_local_ips() {
