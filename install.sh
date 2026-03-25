@@ -14,18 +14,48 @@ TTY_FD=""
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 
-if [[ "${EUID}" -ne 0 ]]; then
-  echo "请使用 root 运行，例如：sudo bash install.sh"
-  exit 1
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  COLOR_RESET=$'\033[0m'
+  COLOR_BOLD=$'\033[1m'
+  COLOR_DIM=$'\033[2m'
+  COLOR_BLUE=$'\033[34m'
+  COLOR_CYAN=$'\033[36m'
+  COLOR_GREEN=$'\033[32m'
+  COLOR_YELLOW=$'\033[33m'
+  COLOR_RED=$'\033[31m'
+else
+  COLOR_RESET=""
+  COLOR_BOLD=""
+  COLOR_DIM=""
+  COLOR_BLUE=""
+  COLOR_CYAN=""
+  COLOR_GREEN=""
+  COLOR_YELLOW=""
+  COLOR_RED=""
 fi
 
 log() {
-  echo "[oneproxy] $1"
+  printf '%b[oneproxy]%b %s\n' "${COLOR_BLUE}${COLOR_BOLD}" "${COLOR_RESET}" "$1"
 }
 
 section() {
-  echo
-  echo "[oneproxy] ==== $1 ===="
+  printf '\n%b[oneproxy] ==== %s ====%b\n' "${COLOR_CYAN}${COLOR_BOLD}" "$1" "${COLOR_RESET}"
+}
+
+success() {
+  printf '%b[oneproxy]%b %s\n' "${COLOR_GREEN}${COLOR_BOLD}" "${COLOR_RESET}" "$1"
+}
+
+warn() {
+  printf '%b[oneproxy]%b %s\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${COLOR_RESET}" "$1" >&2
+}
+
+error() {
+  printf '%b[oneproxy]%b %s\n' "${COLOR_RED}${COLOR_BOLD}" "${COLOR_RESET}" "$1" >&2
+}
+
+kv() {
+  printf '%b%-8s%b %s\n' "${COLOR_DIM}" "$1" "${COLOR_RESET}" "$2"
 }
 
 has_cmd() {
@@ -48,6 +78,11 @@ usage() {
 EOF
 }
 
+if [[ "${EUID}" -ne 0 ]]; then
+  error "请使用 root 运行，例如：sudo bash install.sh"
+  exit 1
+fi
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -68,7 +103,7 @@ parse_args() {
         exit 0
         ;;
       *)
-        echo "未知参数: $1" >&2
+        error "未知参数: $1"
         usage
         exit 1
         ;;
@@ -87,8 +122,8 @@ ensure_tty_input() {
     return
   fi
 
-  echo "当前执行环境无法交互输入，请改用参数方式执行：" >&2
-  echo "curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000 --email admin@example.com" >&2
+  error "当前执行环境无法交互输入，请改用参数方式执行："
+  printf '%s\n' "curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000 --email admin@example.com" >&2
   exit 1
 }
 
@@ -96,7 +131,7 @@ prompt_if_missing() {
   ensure_tty_input
 
   echo
-  echo "[oneproxy] 将创建一个 Nginx HTTPS 反代站点"
+  success "将创建一个 Nginx HTTPS 反代站点"
 
   if [[ -z "${DOMAINS}" ]]; then
     read -r -u "${TTY_FD}" -p "1/3 请输入反代域名: " DOMAINS
@@ -155,7 +190,7 @@ install_base_packages() {
     return
   fi
 
-  echo "不支持当前 Linux 发行版。" >&2
+  error "不支持当前 Linux 发行版。"
   exit 1
 }
 
@@ -164,7 +199,7 @@ install_nginx() {
   section "检查 Nginx"
 
   if has_cmd nginx; then
-    log "Nginx 已安装: $(nginx -v 2>&1)"
+    success "Nginx 已安装: $(nginx -v 2>&1)"
     return
   fi
 
@@ -191,7 +226,7 @@ install_certbot() {
   section "检查 Certbot"
 
   if has_cmd certbot; then
-    log "Certbot 已安装: $(certbot --version 2>/dev/null | head -n 1)"
+    success "Certbot 已安装: $(certbot --version 2>/dev/null | head -n 1)"
   else
     log "检测到未安装 Certbot，开始安装"
   fi
@@ -275,12 +310,12 @@ EOF
 validate_nginx() {
   section "校验 Nginx 配置"
   if nginx -t >/tmp/oneproxy_nginx_test.out 2>/tmp/oneproxy_nginx_test.err; then
-    log "Nginx 配置校验通过"
+    success "Nginx 配置校验通过"
     rm -f /tmp/oneproxy_nginx_test.out /tmp/oneproxy_nginx_test.err
     return
   fi
 
-  echo "[oneproxy] Nginx 配置校验失败" >&2
+  error "Nginx 配置校验失败"
   sed -n '1,20p' /tmp/oneproxy_nginx_test.err >&2 || true
   rm -f /tmp/oneproxy_nginx_test.out /tmp/oneproxy_nginx_test.err
   exit 1
@@ -308,27 +343,27 @@ summarize_nginx_failure() {
   combined="${status_text}"$'\n'"${journal_text}"
 
   if echo "${combined}" | grep -Eqi "bind\(\) to .*:80 failed|bind\(\) to .*:443 failed|address already in use"; then
-    echo "[oneproxy] Nginx 启动失败：80 或 443 端口已被其他程序占用。" >&2
-    echo "建议处理：" >&2
-    echo "- 查看是谁占用了 80/443 端口" >&2
-    echo "- 停掉旧的 Nginx、Apache、宝塔或其他 Web 服务后重试" >&2
+    error "Nginx 启动失败：80 或 443 端口已被其他程序占用。"
+    warn "建议处理："
+    printf '%s\n' "- 查看是谁占用了 80/443 端口" >&2
+    printf '%s\n' "- 停掉旧的 Nginx、Apache、宝塔或其他 Web 服务后重试" >&2
     echo >&2
-    echo "[80 端口占用情况]" >&2
+    printf '%b[80 端口占用情况]%b\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${COLOR_RESET}" >&2
     detect_port_owner 80 >&2 || true
-    echo "[443 端口占用情况]" >&2
+    printf '%b[443 端口占用情况]%b\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${COLOR_RESET}" >&2
     detect_port_owner 443 >&2 || true
     return
   fi
 
   if echo "${combined}" | grep -qi "permission denied"; then
-    echo "[oneproxy] Nginx 启动失败：监听端口时权限不足。" >&2
-    echo "建议处理：" >&2
-    echo "- 确认脚本是用 root 或 sudo 执行的" >&2
+    error "Nginx 启动失败：监听端口时权限不足。"
+    warn "建议处理："
+    printf '%s\n' "- 确认脚本是用 root 或 sudo 执行的" >&2
     return
   fi
 
-  echo "[oneproxy] Nginx 启动失败。" >&2
-  echo "脚本暂时无法自动归类这个错误，请查看下面的原始诊断信息。" >&2
+  error "Nginx 启动失败。"
+  warn "脚本暂时无法自动归类这个错误，请查看下面的原始诊断信息。"
 }
 
 reload_nginx() {
@@ -336,18 +371,18 @@ reload_nginx() {
   systemctl enable nginx >/dev/null 2>&1 || true
 
   if systemctl restart nginx; then
-    log "Nginx 已启动"
+    success "Nginx 已启动"
     return
   fi
 
   summarize_nginx_failure
   echo >&2
-  echo "[oneproxy] 下面是原始诊断信息：" >&2
+  warn "下面是原始诊断信息："
   echo >&2
-  echo "[systemctl status]" >&2
+  printf '%b[systemctl status]%b\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${COLOR_RESET}" >&2
   systemctl --no-pager --full status nginx 2>&1 | tail -n 20 >&2 || true
   echo >&2
-  echo "[journalctl]" >&2
+  printf '%b[journalctl]%b\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${COLOR_RESET}" >&2
   journalctl --no-pager -u nginx -n 20 2>&1 >&2 || true
   exit 1
 }
@@ -412,13 +447,13 @@ check_domains() {
       done <<< "${resolved}"
     fi
 
-    echo "域名: ${domain}"
-    echo "解析: ${resolved:-未解析到 IP}"
-    echo "服务器 IP: ${server_ips:-无法获取服务器 IP}"
+    kv "域名:" "${domain}"
+    kv "解析:" "${resolved:-未解析到 IP}"
+    kv "服务器IP:" "${server_ips:-无法获取服务器 IP}"
     if [[ "${ok}" == "yes" ]]; then
-      echo "结果: 正常"
+      success "结果: 正常"
     else
-      echo "结果: 异常，域名暂未解析到当前服务器"
+      warn "结果: 异常，域名暂未解析到当前服务器"
       has_failure="1"
     fi
     echo
@@ -432,15 +467,15 @@ check_upstream() {
   section "检查源站连通性"
 
   if curl -k -I -L --max-time 8 "${upstream}" >/tmp/oneproxy_upstream_check.out 2>/tmp/oneproxy_upstream_check.err; then
-    log "源站可访问"
+    success "源站可访问"
     sed -n '1p' /tmp/oneproxy_upstream_check.out || true
     rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
     return 0
   fi
 
-  echo "[oneproxy] 源站检测失败" >&2
+  error "源站检测失败"
   sed -n '1,5p' /tmp/oneproxy_upstream_check.err >&2 || true
-  echo "请确认源站已启动、端口已监听、协议填写正确。" >&2
+  warn "请确认源站已启动、端口已监听、协议填写正确。"
   rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
   return 1
 }
@@ -456,20 +491,20 @@ summarize_certbot_failure() {
   output="$(cat /tmp/oneproxy_certbot.err 2>/dev/null || true)"
 
   if echo "${output}" | grep -qi "NXDOMAIN"; then
-    echo "[oneproxy] HTTPS 申请失败：域名不存在或 DNS 记录未生效。" >&2
+    error "HTTPS 申请失败：域名不存在或 DNS 记录未生效。"
     return
   fi
 
   if echo "${output}" | grep -Eqi "Timeout during connect|Connection refused|unauthorized|Invalid response"; then
-    echo "[oneproxy] HTTPS 申请失败：Let's Encrypt 无法通过 80 端口验证当前域名。" >&2
-    echo "建议处理：" >&2
-    echo "- 确认域名已经解析到当前服务器公网 IP" >&2
-    echo "- 确认 80 端口已对外放行" >&2
-    echo "- 确认 CDN 或代理没有拦截验证请求" >&2
+    error "HTTPS 申请失败：Let's Encrypt 无法通过 80 端口验证当前域名。"
+    warn "建议处理："
+    printf '%s\n' "- 确认域名已经解析到当前服务器公网 IP" >&2
+    printf '%s\n' "- 确认 80 端口已对外放行" >&2
+    printf '%s\n' "- 确认 CDN 或代理没有拦截验证请求" >&2
     return
   fi
 
-  echo "[oneproxy] HTTPS 申请失败。" >&2
+  error "HTTPS 申请失败。"
 }
 
 enable_https() {
@@ -484,14 +519,14 @@ enable_https() {
   fi
 
   if eval "certbot --nginx --redirect --non-interactive --agree-tos ${certbot_email_args} ${certbot_domain_args}" >/tmp/oneproxy_certbot.out 2>/tmp/oneproxy_certbot.err; then
-    log "HTTPS 证书申请成功，已自动配置 80 -> 443"
+    success "HTTPS 证书申请成功，已自动配置 80 -> 443"
     rm -f /tmp/oneproxy_certbot.out /tmp/oneproxy_certbot.err
     return
   fi
 
   summarize_certbot_failure
   echo >&2
-  echo "[oneproxy] 下面是 Certbot 原始输出：" >&2
+  warn "下面是 Certbot 原始输出："
   sed -n '1,40p' /tmp/oneproxy_certbot.err >&2 || true
   rm -f /tmp/oneproxy_certbot.out /tmp/oneproxy_certbot.err
   exit 1
@@ -501,38 +536,32 @@ cleanup_legacy_files() {
   section "清理残留"
   rm -rf "${LEGACY_APP_DIR}" 2>/dev/null || true
   rm -f "${LEGACY_BIN}" 2>/dev/null || true
-  log "已清理旧版项目残留文件"
+  success "已清理旧版项目残留文件"
 }
 
 print_finish() {
-  cat <<EOF
-
-[oneproxy] 部署完成
-域名    : ${DOMAINS}
-源站    : ${UPSTREAM}
-HTTP 配置: ${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf
-HTTPS   : 已开启
-
-以后如果要新增或修改域名，重新执行同一条命令即可。
-EOF
+  printf '\n%b[oneproxy] 部署完成%b\n' "${COLOR_GREEN}${COLOR_BOLD}" "${COLOR_RESET}"
+  kv "域名:" "${DOMAINS}"
+  kv "源站:" "${UPSTREAM}"
+  kv "HTTP配置:" "${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf"
+  kv "HTTPS:" "已开启"
+  echo
+  printf '%s\n' "以后如果要新增或修改域名，重新执行同一条命令即可。"
 }
 
 print_partial_failure() {
-  cat <<EOF
-
-[oneproxy] HTTP 配置已写入，但部署未通过最终检查
-域名    : ${DOMAINS}
-源站    : ${UPSTREAM}
-配置文件: ${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf
-
-失败原因通常是：
-- 域名还没有解析到当前服务器
-- 源站服务未启动
-- 源站端口未监听
-- 防火墙未放行
-
-请先修复上面的检查项，再重新执行同一条命令。
-EOF
+  printf '\n%b[oneproxy] HTTP 配置已写入，但部署未通过最终检查%b\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${COLOR_RESET}" >&2
+  kv "域名:" "${DOMAINS}" >&2
+  kv "源站:" "${UPSTREAM}" >&2
+  kv "配置文件:" "${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf" >&2
+  echo >&2
+  printf '%s\n' "失败原因通常是：" >&2
+  printf '%s\n' "- 域名还没有解析到当前服务器" >&2
+  printf '%s\n' "- 源站服务未启动" >&2
+  printf '%s\n' "- 源站端口未监听" >&2
+  printf '%s\n' "- 防火墙未放行" >&2
+  echo >&2
+  printf '%s\n' "请先修复上面的检查项，再重新执行同一条命令。" >&2
 }
 
 main() {
@@ -544,23 +573,23 @@ main() {
   prompt_if_missing
 
   if [[ -z "${DOMAINS}" || -z "${UPSTREAM}" ]]; then
-    echo "域名和源站不能为空。" >&2
+    error "域名和源站不能为空。"
     exit 1
   fi
 
   pm="$(detect_pm)"
   if [[ -z "${pm}" ]]; then
-    echo "不支持当前 Linux 发行版。" >&2
+    error "不支持当前 Linux 发行版。"
     exit 1
   fi
 
   UPSTREAM="$(normalize_upstream "${UPSTREAM}")"
 
   section "部署信息"
-  echo "域名: ${DOMAINS}"
-  echo "源站: ${UPSTREAM}"
-  echo "系统: ${pm}"
-  echo "邮箱: ${EMAIL:-未提供，将使用无邮箱模式申请证书}"
+  kv "域名:" "${DOMAINS}"
+  kv "源站:" "${UPSTREAM}"
+  kv "系统:" "${pm}"
+  kv "邮箱:" "${EMAIL:-未提供，将使用无邮箱模式申请证书}"
 
   install_base_packages "${pm}"
   install_nginx "${pm}"
@@ -579,7 +608,7 @@ main() {
 
   if [[ "${domain_check_ok}" != "1" || "${upstream_check_ok}" != "1" ]]; then
     cleanup_legacy_files
-    print_partial_failure >&2
+    print_partial_failure
     exit 1
   fi
 
