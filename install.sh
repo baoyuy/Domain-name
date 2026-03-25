@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CADDY_SITES_DIR="/etc/caddy/sites-enabled"
-CADDY_FILE="/etc/caddy/Caddyfile"
+NGINX_SITES_AVAILABLE="/etc/nginx/sites-available"
+NGINX_SITES_ENABLED="/etc/nginx/sites-enabled"
 LEGACY_APP_DIR="/opt/oneproxy"
 LEGACY_BIN="/usr/local/bin/oneproxy"
 
 DOMAINS="${ONEPROXY_DOMAIN:-}"
 UPSTREAM="${ONEPROXY_UPSTREAM:-}"
-EMAIL="${ONEPROXY_EMAIL:-}"
 TTY_FD=""
 
 export DEBIAN_FRONTEND=noninteractive
@@ -40,7 +39,6 @@ usage() {
 参数:
   --domain, -d    反代域名，多个域名用英文逗号分隔
   --to, -t        源站地址，例如 127.0.0.1:3000 或 http://127.0.0.1:3000
-  --email, -e     可选，Caddy 证书通知邮箱
   --help, -h      显示帮助
 
 示例:
@@ -57,10 +55,6 @@ parse_args() {
         ;;
       --to|-t)
         UPSTREAM="${2:-}"
-        shift 2
-        ;;
-      --email|-e)
-        EMAIL="${2:-}"
         shift 2
         ;;
       --help|-h)
@@ -96,18 +90,14 @@ prompt_if_missing() {
   ensure_tty_input
 
   echo
-  echo "[oneproxy] 将创建一个 Caddy 反代站点"
+  echo "[oneproxy] 将创建一个 Nginx 反代站点"
 
   if [[ -z "${DOMAINS}" ]]; then
-    read -r -u "${TTY_FD}" -p "1/3 请输入反代域名: " DOMAINS
+    read -r -u "${TTY_FD}" -p "1/2 请输入反代域名: " DOMAINS
   fi
 
   if [[ -z "${UPSTREAM}" ]]; then
-    read -r -u "${TTY_FD}" -p "2/3 请输入源站地址，例如 127.0.0.1:3000: " UPSTREAM
-  fi
-
-  if [[ -z "${EMAIL}" ]]; then
-    read -r -u "${TTY_FD}" -p "3/3 请输入通知邮箱，可直接回车跳过: " EMAIL
+    read -r -u "${TTY_FD}" -p "2/2 请输入源站地址，例如 127.0.0.1:3000: " UPSTREAM
   fi
 }
 
@@ -138,20 +128,20 @@ install_base_packages() {
   if [[ "$pm" == "apt" ]]; then
     log "更新软件源"
     apt-get update -qq
-    log "安装基础依赖: curl ca-certificates gnupg"
-    apt_quiet_install curl ca-certificates gnupg apt-transport-https
+    log "安装基础依赖: curl"
+    apt_quiet_install curl
     return
   fi
 
   if [[ "$pm" == "dnf" ]]; then
-    log "安装基础依赖: curl ca-certificates gnupg2"
-    dnf install -y -q curl ca-certificates gnupg2 >/dev/null
+    log "安装基础依赖: curl"
+    dnf install -y -q curl >/dev/null
     return
   fi
 
   if [[ "$pm" == "yum" ]]; then
-    log "安装基础依赖: curl ca-certificates gnupg2"
-    yum install -y -q curl ca-certificates gnupg2 >/dev/null
+    log "安装基础依赖: curl"
+    yum install -y -q curl >/dev/null
     return
   fi
 
@@ -159,37 +149,29 @@ install_base_packages() {
   exit 1
 }
 
-install_caddy() {
+install_nginx() {
   local pm="$1"
-  section "检查 Caddy"
+  section "检查 Nginx"
 
-  if has_cmd caddy; then
-    log "Caddy 已安装: $(caddy version)"
+  if has_cmd nginx; then
+    log "Nginx 已安装: $(nginx -v 2>&1)"
     return
   fi
 
-  log "检测到未安装 Caddy，开始安装"
+  log "检测到未安装 Nginx，开始安装"
 
   if [[ "$pm" == "apt" ]]; then
-    apt_quiet_install debian-keyring debian-archive-keyring
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update -qq
-    apt_quiet_install caddy
+    apt_quiet_install nginx
     return
   fi
 
   if [[ "$pm" == "dnf" ]]; then
-    dnf install -y -q 'dnf-command(copr)' >/dev/null
-    dnf copr enable -y @caddy/caddy >/dev/null
-    dnf install -y -q caddy >/dev/null
+    dnf install -y -q nginx >/dev/null
     return
   fi
 
   if [[ "$pm" == "yum" ]]; then
-    yum install -y -q yum-plugin-copr >/dev/null
-    yum copr enable -y @caddy/caddy >/dev/null
-    yum install -y -q caddy >/dev/null
+    yum install -y -q nginx >/dev/null
     return
   fi
 }
@@ -215,76 +197,55 @@ site_id() {
 }
 
 joined_domains() {
-  normalize_domains "$1" | paste -sd',' - | sed 's/,/, /g'
+  normalize_domains "$1" | paste -sd' ' -
 }
 
-ensure_caddy_layout() {
-  mkdir -p "${CADDY_SITES_DIR}"
-
-  if [[ ! -f "${CADDY_FILE}" ]]; then
-    touch "${CADDY_FILE}"
-  fi
-
-  if [[ -n "${EMAIL}" ]] && ! grep -Fq "email ${EMAIL}" "${CADDY_FILE}"; then
-    if grep -Eq '^[[:space:]]*\{' "${CADDY_FILE}"; then
-      :
-    else
-      cp "${CADDY_FILE}" "${CADDY_FILE}.bak.$(date +%s)" 2>/dev/null || true
-      printf '{\n  email %s\n}\n\n' "${EMAIL}" > "${CADDY_FILE}.tmp"
-      cat "${CADDY_FILE}" >> "${CADDY_FILE}.tmp"
-      mv "${CADDY_FILE}.tmp" "${CADDY_FILE}"
-    fi
-  fi
-
-  if ! grep -Fq "import ${CADDY_SITES_DIR}/*.caddy" "${CADDY_FILE}"; then
-    printf '\nimport %s/*.caddy\n' "${CADDY_SITES_DIR}" >> "${CADDY_FILE}"
-  fi
+ensure_nginx_layout() {
+  mkdir -p "${NGINX_SITES_AVAILABLE}" "${NGINX_SITES_ENABLED}"
 }
 
 write_site_config() {
   local domains_csv="$1"
   local upstream="$2"
-  local file_path="${CADDY_SITES_DIR}/$(site_id "${domains_csv}").caddy"
+  local site_name file_path enabled_path
+
+  site_name="$(site_id "${domains_csv}")"
+  file_path="${NGINX_SITES_AVAILABLE}/${site_name}.conf"
+  enabled_path="${NGINX_SITES_ENABLED}/${site_name}.conf"
 
   cat > "${file_path}" <<EOF
-$(joined_domains "${domains_csv}") {
-  reverse_proxy ${upstream}
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $(joined_domains "${domains_csv}");
+
+    location / {
+        proxy_pass ${upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
 }
 EOF
+
+  ln -sf "${file_path}" "${enabled_path}"
 }
 
-validate_caddy() {
+validate_nginx() {
   section "校验配置"
-  if caddy validate --config "${CADDY_FILE}" >/tmp/oneproxy_caddy_validate.out 2>/tmp/oneproxy_caddy_validate.err; then
-    log "Caddy 配置校验通过"
-    rm -f /tmp/oneproxy_caddy_validate.out /tmp/oneproxy_caddy_validate.err
+  if nginx -t >/tmp/oneproxy_nginx_test.out 2>/tmp/oneproxy_nginx_test.err; then
+    log "Nginx 配置校验通过"
+    rm -f /tmp/oneproxy_nginx_test.out /tmp/oneproxy_nginx_test.err
     return
   fi
 
-  echo "[oneproxy] Caddy 配置校验失败" >&2
-  sed -n '1,20p' /tmp/oneproxy_caddy_validate.err >&2 || true
-  rm -f /tmp/oneproxy_caddy_validate.out /tmp/oneproxy_caddy_validate.err
-  exit 1
-}
-
-reload_caddy() {
-  section "启动服务"
-  systemctl enable caddy >/dev/null 2>&1 || true
-
-  if systemctl restart caddy; then
-    log "Caddy 已启动"
-    return
-  fi
-
-  summarize_caddy_failure
-  echo >&2
-  echo "[oneproxy] 下面是原始诊断信息：" >&2
-  echo >&2
-  echo "[systemctl status]" >&2
-  systemctl --no-pager --full status caddy 2>&1 | tail -n 20 >&2 || true
-  echo >&2
-  echo "[journalctl]" >&2
-  journalctl --no-pager -u caddy -n 20 2>&1 >&2 || true
+  echo "[oneproxy] Nginx 配置校验失败" >&2
+  sed -n '1,20p' /tmp/oneproxy_nginx_test.err >&2 || true
+  rm -f /tmp/oneproxy_nginx_test.out /tmp/oneproxy_nginx_test.err
   exit 1
 }
 
@@ -302,46 +263,54 @@ detect_port_owner() {
   fi
 }
 
-summarize_caddy_failure() {
+summarize_nginx_failure() {
   local status_text journal_text combined
 
-  status_text="$(systemctl --no-pager --full status caddy 2>&1 || true)"
-  journal_text="$(journalctl --no-pager -u caddy -n 20 2>&1 || true)"
+  status_text="$(systemctl --no-pager --full status nginx 2>&1 || true)"
+  journal_text="$(journalctl --no-pager -u nginx -n 20 2>&1 || true)"
   combined="${status_text}"$'\n'"${journal_text}"
 
-  if echo "${combined}" | grep -qi "bind: address already in use"; then
-    echo "[oneproxy] Caddy 启动失败：443 端口已被其他程序占用。" >&2
-    echo "可能原因：" >&2
-    echo "1. 服务器上已经有 Nginx、Apache、宝塔、其他 Caddy 或面板服务在监听 443" >&2
-    echo "2. 你之前部署过 HTTPS 服务，但旧服务没有停掉" >&2
-    echo >&2
+  if echo "${combined}" | grep -qi "bind() to 0.0.0.0:80 failed"; then
+    echo "[oneproxy] Nginx 启动失败：80 端口已被其他程序占用。" >&2
     echo "建议处理：" >&2
-    echo "- 先查看是谁占用了 443 端口" >&2
-    echo "- 停掉占用 443 的旧服务后，再重新执行当前命令" >&2
+    echo "- 查看是谁占用了 80 端口" >&2
+    echo "- 停掉旧的 Nginx、Apache、宝塔或其他 Web 服务后重试" >&2
     echo >&2
-    echo "[443 端口占用情况]" >&2
-    detect_port_owner 443 >&2 || echo "无法自动识别占用进程，请手动执行: ss -ltnp | grep :443" >&2
+    echo "[80 端口占用情况]" >&2
+    detect_port_owner 80 >&2 || echo "无法自动识别占用进程，请手动执行: ss -ltnp | grep :80" >&2
     return
   fi
 
-  if echo "${combined}" | grep -qi "bind: permission denied"; then
-    echo "[oneproxy] Caddy 启动失败：监听端口时权限不足。" >&2
+  if echo "${combined}" | grep -qi "permission denied"; then
+    echo "[oneproxy] Nginx 启动失败：监听端口时权限不足。" >&2
     echo "建议处理：" >&2
     echo "- 确认脚本是用 root 或 sudo 执行的" >&2
-    echo "- 确认系统安全策略没有阻止 Caddy 监听 80/443" >&2
     return
   fi
 
-  if echo "${combined}" | grep -qi "certificate"; then
-    echo "[oneproxy] Caddy 启动失败：可能与证书申请或 TLS 配置有关。" >&2
-    echo "建议处理：" >&2
-    echo "- 确认域名已经解析到当前服务器公网 IP" >&2
-    echo "- 确认 80 和 443 端口已对外放行" >&2
-    return
-  fi
-
-  echo "[oneproxy] Caddy 启动失败。" >&2
+  echo "[oneproxy] Nginx 启动失败。" >&2
   echo "脚本暂时无法自动归类这个错误，请查看下面的原始诊断信息。" >&2
+}
+
+reload_nginx() {
+  section "启动服务"
+  systemctl enable nginx >/dev/null 2>&1 || true
+
+  if systemctl restart nginx; then
+    log "Nginx 已启动"
+    return
+  fi
+
+  summarize_nginx_failure
+  echo >&2
+  echo "[oneproxy] 下面是原始诊断信息：" >&2
+  echo >&2
+  echo "[systemctl status]" >&2
+  systemctl --no-pager --full status nginx 2>&1 | tail -n 20 >&2 || true
+  echo >&2
+  echo "[journalctl]" >&2
+  journalctl --no-pager -u nginx -n 20 2>&1 >&2 || true
+  exit 1
 }
 
 get_local_ips() {
@@ -426,7 +395,7 @@ print_finish() {
 [oneproxy] 部署完成
 域名    : ${DOMAINS}
 源站    : ${UPSTREAM}
-配置文件: ${CADDY_SITES_DIR}/$(site_id "${DOMAINS}").caddy
+配置文件: ${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf
 
 以后如果要新增或修改域名，重新执行同一条命令即可。
 EOF
@@ -457,11 +426,11 @@ main() {
   echo "系统: ${pm}"
 
   install_base_packages "${pm}"
-  install_caddy "${pm}"
-  ensure_caddy_layout
+  install_nginx "${pm}"
+  ensure_nginx_layout
   write_site_config "${DOMAINS}" "${UPSTREAM}"
-  validate_caddy
-  reload_caddy
+  validate_nginx
+  reload_nginx
   check_domains "${DOMAINS}"
   check_upstream "${UPSTREAM}"
   cleanup_legacy_files
