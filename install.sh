@@ -10,6 +10,7 @@ LEGACY_BIN="/usr/local/bin/oneproxy"
 DOMAINS="${ONEPROXY_DOMAIN:-}"
 UPSTREAM="${ONEPROXY_UPSTREAM:-}"
 EMAIL="${ONEPROXY_EMAIL:-}"
+TTY_FD=""
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "请使用 root 运行，例如：sudo bash install.sh"
@@ -74,17 +75,35 @@ parse_args() {
 }
 
 prompt_if_missing() {
+  ensure_tty_input
+
   if [[ -z "${DOMAINS}" ]]; then
-    read -r -p "请输入反代域名，多个域名用英文逗号分隔: " DOMAINS
+    read -r -u "${TTY_FD}" -p "请输入反代域名，多个域名用英文逗号分隔: " DOMAINS
   fi
 
   if [[ -z "${UPSTREAM}" ]]; then
-    read -r -p "请输入源站地址，例如 127.0.0.1:3000: " UPSTREAM
+    read -r -u "${TTY_FD}" -p "请输入源站地址，例如 127.0.0.1:3000: " UPSTREAM
   fi
 
   if [[ -z "${EMAIL}" ]]; then
-    read -r -p "请输入通知邮箱，可直接回车跳过: " EMAIL
+    read -r -u "${TTY_FD}" -p "请输入通知邮箱，可直接回车跳过: " EMAIL
   fi
+}
+
+ensure_tty_input() {
+  if [[ -n "${TTY_FD}" ]]; then
+    return
+  fi
+
+  if [[ -r /dev/tty ]]; then
+    exec 3</dev/tty
+    TTY_FD="3"
+    return
+  fi
+
+  echo "当前执行环境无法交互输入，请使用参数方式执行：" >&2
+  echo "curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000" >&2
+  exit 1
 }
 
 detect_pm() {
@@ -346,6 +365,10 @@ main() {
   check_upstream "${UPSTREAM}"
   cleanup_legacy_files
   print_finish
+
+  if [[ -n "${TTY_FD}" ]]; then
+    exec 3<&-
+  fi
 }
 
 main "$@"

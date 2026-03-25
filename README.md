@@ -12,11 +12,16 @@
 curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000
 ```
 
-也可以不传参数，直接执行后按提示输入：
+也支持不传参数，直接执行后按提示输入：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash
 ```
+
+现在这两种方式都支持：
+
+- 有参数：无交互直接部署
+- 无参数：通过 `/dev/tty` 交互输入域名和源站
 
 ## 脚本流程
 
