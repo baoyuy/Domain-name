@@ -550,10 +550,9 @@ print_finish() {
 }
 
 print_partial_failure() {
-  printf '\n%b[oneproxy] HTTP 配置已写入，但部署未通过最终检查%b\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${COLOR_RESET}" >&2
+  printf '\n%b[oneproxy] 部署未通过最终检查，未写入 HTTP 配置%b\n' "${COLOR_YELLOW}${COLOR_BOLD}" "${COLOR_RESET}" >&2
   kv "域名:" "${DOMAINS}" >&2
   kv "源站:" "${UPSTREAM}" >&2
-  kv "配置文件:" "${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf" >&2
   echo >&2
   printf '%s\n' "失败原因通常是：" >&2
   printf '%s\n' "- 域名还没有解析到当前服务器" >&2
@@ -594,10 +593,6 @@ main() {
   install_base_packages "${pm}"
   install_nginx "${pm}"
   install_certbot "${pm}"
-  ensure_nginx_layout
-  write_site_config "${DOMAINS}" "${UPSTREAM}"
-  validate_nginx
-  reload_nginx
 
   if check_domains "${DOMAINS}"; then
     domain_check_ok="1"
@@ -612,6 +607,10 @@ main() {
     exit 1
   fi
 
+  ensure_nginx_layout
+  write_site_config "${DOMAINS}" "${UPSTREAM}"
+  validate_nginx
+  reload_nginx
   enable_https
   validate_nginx
   reload_nginx
