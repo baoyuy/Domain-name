@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_REPO_URL="https://github.com/baoyuy/Domain-name.git"
 CADDY_SITES_DIR="/etc/caddy/sites-enabled"
 CADDY_FILE="/etc/caddy/Caddyfile"
 LEGACY_APP_DIR="/opt/oneproxy"
@@ -12,6 +11,9 @@ UPSTREAM="${ONEPROXY_UPSTREAM:-}"
 EMAIL="${ONEPROXY_EMAIL:-}"
 TTY_FD=""
 
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "请使用 root 运行，例如：sudo bash install.sh"
   exit 1
@@ -19,6 +21,11 @@ fi
 
 log() {
   echo "[oneproxy] $1"
+}
+
+section() {
+  echo
+  echo "[oneproxy] ==== $1 ===="
 }
 
 has_cmd() {
@@ -35,11 +42,6 @@ usage() {
   --to, -t        源站地址，例如 127.0.0.1:3000 或 http://127.0.0.1:3000
   --email, -e     可选，Caddy 证书通知邮箱
   --help, -h      显示帮助
-
-环境变量:
-  ONEPROXY_DOMAIN
-  ONEPROXY_UPSTREAM
-  ONEPROXY_EMAIL
 
 示例:
   curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000
@@ -74,22 +76,6 @@ parse_args() {
   done
 }
 
-prompt_if_missing() {
-  ensure_tty_input
-
-  if [[ -z "${DOMAINS}" ]]; then
-    read -r -u "${TTY_FD}" -p "请输入反代域名，多个域名用英文逗号分隔: " DOMAINS
-  fi
-
-  if [[ -z "${UPSTREAM}" ]]; then
-    read -r -u "${TTY_FD}" -p "请输入源站地址，例如 127.0.0.1:3000: " UPSTREAM
-  fi
-
-  if [[ -z "${EMAIL}" ]]; then
-    read -r -u "${TTY_FD}" -p "请输入通知邮箱，可直接回车跳过: " EMAIL
-  fi
-}
-
 ensure_tty_input() {
   if [[ -n "${TTY_FD}" ]]; then
     return
@@ -101,9 +87,28 @@ ensure_tty_input() {
     return
   fi
 
-  echo "当前执行环境无法交互输入，请使用参数方式执行：" >&2
+  echo "当前执行环境无法交互输入，请改用参数方式执行：" >&2
   echo "curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000" >&2
   exit 1
+}
+
+prompt_if_missing() {
+  ensure_tty_input
+
+  echo
+  echo "[oneproxy] 将创建一个 Caddy 反代站点"
+
+  if [[ -z "${DOMAINS}" ]]; then
+    read -r -u "${TTY_FD}" -p "1/3 请输入反代域名: " DOMAINS
+  fi
+
+  if [[ -z "${UPSTREAM}" ]]; then
+    read -r -u "${TTY_FD}" -p "2/3 请输入源站地址，例如 127.0.0.1:3000: " UPSTREAM
+  fi
+
+  if [[ -z "${EMAIL}" ]]; then
+    read -r -u "${TTY_FD}" -p "3/3 请输入通知邮箱，可直接回车跳过: " EMAIL
+  fi
 }
 
 detect_pm() {
@@ -122,76 +127,69 @@ detect_pm() {
   echo ""
 }
 
+apt_quiet_install() {
+  apt-get install -y -qq "$@" >/dev/null
+}
+
 install_base_packages() {
   local pm="$1"
+  section "检查系统依赖"
+
   if [[ "$pm" == "apt" ]]; then
-    apt-get update
-    apt-get install -y curl ca-certificates gnupg git
+    log "更新软件源"
+    apt-get update -qq
+    log "安装基础依赖: curl ca-certificates gnupg"
+    apt_quiet_install curl ca-certificates gnupg apt-transport-https
     return
   fi
+
   if [[ "$pm" == "dnf" ]]; then
-    dnf install -y curl ca-certificates gnupg2 git
+    log "安装基础依赖: curl ca-certificates gnupg2"
+    dnf install -y -q curl ca-certificates gnupg2 >/dev/null
     return
   fi
+
   if [[ "$pm" == "yum" ]]; then
-    yum install -y curl ca-certificates gnupg2 git
+    log "安装基础依赖: curl ca-certificates gnupg2"
+    yum install -y -q curl ca-certificates gnupg2 >/dev/null
     return
   fi
+
   echo "不支持当前 Linux 发行版。" >&2
   exit 1
 }
 
-install_node() {
-  local pm="$1"
-  if has_cmd node; then
-    log "Node 已安装: $(node -v)"
-    return
-  fi
-
-  log "检测到未安装 Node，开始安装"
-  if [[ "$pm" == "apt" ]]; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
-    return
-  fi
-  if [[ "$pm" == "dnf" ]]; then
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-    dnf install -y nodejs
-    return
-  fi
-  if [[ "$pm" == "yum" ]]; then
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-    yum install -y nodejs
-    return
-  fi
-}
-
 install_caddy() {
   local pm="$1"
+  section "检查 Caddy"
+
   if has_cmd caddy; then
     log "Caddy 已安装: $(caddy version)"
     return
   fi
 
   log "检测到未安装 Caddy，开始安装"
+
   if [[ "$pm" == "apt" ]]; then
-    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
+    apt_quiet_install debian-keyring debian-archive-keyring
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update
-    apt-get install -y caddy
+    apt-get update -qq
+    apt_quiet_install caddy
     return
   fi
+
   if [[ "$pm" == "dnf" ]]; then
-    dnf install -y 'dnf-command(copr)'
-    dnf copr enable -y @caddy/caddy
-    dnf install -y caddy
+    dnf install -y -q 'dnf-command(copr)' >/dev/null
+    dnf copr enable -y @caddy/caddy >/dev/null
+    dnf install -y -q caddy >/dev/null
     return
   fi
+
   if [[ "$pm" == "yum" ]]; then
-    yum install -y yum-plugin-copr
-    yum copr enable -y @caddy/caddy
-    yum install -y caddy
+    yum install -y -q yum-plugin-copr >/dev/null
+    yum copr enable -y @caddy/caddy >/dev/null
+    yum install -y -q caddy >/dev/null
     return
   fi
 }
@@ -216,6 +214,10 @@ site_id() {
   first_domain "$1" | sed 's/[^a-z0-9.-]/-/g'
 }
 
+joined_domains() {
+  normalize_domains "$1" | paste -sd',' - | sed 's/,/, /g'
+}
+
 ensure_caddy_layout() {
   mkdir -p "${CADDY_SITES_DIR}"
 
@@ -223,12 +225,19 @@ ensure_caddy_layout() {
     touch "${CADDY_FILE}"
   fi
 
-  if ! grep -Fq "import ${CADDY_SITES_DIR}/*.caddy" "${CADDY_FILE}"; then
-    printf '\nimport %s/*.caddy\n' "${CADDY_SITES_DIR}" >> "${CADDY_FILE}"
+  if [[ -n "${EMAIL}" ]] && ! grep -Fq "email ${EMAIL}" "${CADDY_FILE}"; then
+    if grep -Eq '^[[:space:]]*\{' "${CADDY_FILE}"; then
+      :
+    else
+      cp "${CADDY_FILE}" "${CADDY_FILE}.bak.$(date +%s)" 2>/dev/null || true
+      printf '{\n  email %s\n}\n\n' "${EMAIL}" > "${CADDY_FILE}.tmp"
+      cat "${CADDY_FILE}" >> "${CADDY_FILE}.tmp"
+      mv "${CADDY_FILE}.tmp" "${CADDY_FILE}"
+    fi
   fi
 
-  if [[ -n "${EMAIL}" ]] && ! grep -Eq '^[[:space:]]*\{[[:space:]]*$' "${CADDY_FILE}"; then
-    printf '{\n  email %s\n}\n\nimport %s/*.caddy\n' "${EMAIL}" "${CADDY_SITES_DIR}" > "${CADDY_FILE}"
+  if ! grep -Fq "import ${CADDY_SITES_DIR}/*.caddy" "${CADDY_FILE}"; then
+    printf '\nimport %s/*.caddy\n' "${CADDY_SITES_DIR}" >> "${CADDY_FILE}"
   fi
 }
 
@@ -236,19 +245,45 @@ write_site_config() {
   local domains_csv="$1"
   local upstream="$2"
   local file_path="${CADDY_SITES_DIR}/$(site_id "${domains_csv}").caddy"
-  local joined_domains
 
-  joined_domains="$(normalize_domains "${domains_csv}" | paste -sd ", " -)"
   cat > "${file_path}" <<EOF
-${joined_domains} {
+$(joined_domains "${domains_csv}") {
   reverse_proxy ${upstream}
 }
 EOF
 }
 
+validate_caddy() {
+  section "校验配置"
+  if caddy validate --config "${CADDY_FILE}" >/tmp/oneproxy_caddy_validate.out 2>/tmp/oneproxy_caddy_validate.err; then
+    log "Caddy 配置校验通过"
+    rm -f /tmp/oneproxy_caddy_validate.out /tmp/oneproxy_caddy_validate.err
+    return
+  fi
+
+  echo "[oneproxy] Caddy 配置校验失败" >&2
+  sed -n '1,20p' /tmp/oneproxy_caddy_validate.err >&2 || true
+  rm -f /tmp/oneproxy_caddy_validate.out /tmp/oneproxy_caddy_validate.err
+  exit 1
+}
+
 reload_caddy() {
+  section "启动服务"
   systemctl enable caddy >/dev/null 2>&1 || true
-  systemctl restart caddy
+
+  if systemctl restart caddy; then
+    log "Caddy 已启动"
+    return
+  fi
+
+  echo "[oneproxy] Caddy 启动失败，下面是诊断信息：" >&2
+  echo >&2
+  echo "[systemctl status]" >&2
+  systemctl --no-pager --full status caddy 2>&1 | tail -n 20 >&2 || true
+  echo >&2
+  echo "[journalctl]" >&2
+  journalctl --no-pager -u caddy -n 20 2>&1 >&2 || true
+  exit 1
 }
 
 get_local_ips() {
@@ -276,7 +311,7 @@ check_domains() {
   local local_ips resolved ok
   local_ips="$(get_local_ips)"
 
-  log "开始检查域名解析"
+  section "检查域名解析"
   while IFS= read -r domain; do
     [[ -z "${domain}" ]] && continue
     resolved="$(resolve_domain "${domain}" || true)"
@@ -292,51 +327,55 @@ check_domains() {
       done <<< "${resolved}"
     fi
 
-    echo "  域名: ${domain}"
-    echo "  解析: ${resolved:-未解析到 IP}"
-    echo "  本机: ${local_ips:-无法获取本机 IP}"
+    echo "域名: ${domain}"
+    echo "解析: ${resolved:-未解析到 IP}"
+    echo "本机: ${local_ips:-无法获取本机 IP}"
     if [[ "${ok}" == "yes" ]]; then
-      echo "  结果: 正常"
+      echo "结果: 正常"
     else
-      echo "  结果: 异常，域名暂未解析到当前服务器"
+      echo "结果: 异常，域名暂未解析到当前服务器"
     fi
+    echo
   done < <(normalize_domains "${domains_csv}")
 }
 
 check_upstream() {
   local upstream="$1"
-  log "开始检查源站连通性"
+  section "检查源站连通性"
+
   if curl -k -I -L --max-time 8 "${upstream}" >/tmp/oneproxy_upstream_check.out 2>/tmp/oneproxy_upstream_check.err; then
-    head -n 1 /tmp/oneproxy_upstream_check.out || true
-    echo "  结果: 正常"
+    log "源站可访问"
+    sed -n '1p' /tmp/oneproxy_upstream_check.out || true
   else
-    sed -n '1p' /tmp/oneproxy_upstream_check.err || true
-    echo "  结果: 异常，请确认源站已启动、端口已监听、协议填写正确"
+    echo "[oneproxy] 源站检测失败" >&2
+    sed -n '1,5p' /tmp/oneproxy_upstream_check.err >&2 || true
+    echo "请确认源站已启动、端口已监听、协议填写正确。" >&2
   fi
+
   rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
 }
 
 cleanup_legacy_files() {
+  section "清理残留"
   rm -rf "${LEGACY_APP_DIR}" 2>/dev/null || true
   rm -f "${LEGACY_BIN}" 2>/dev/null || true
-  log "已清理部署流程中无用的旧项目文件"
+  log "已清理旧版项目残留文件"
 }
 
 print_finish() {
   cat <<EOF
 
-[oneproxy] 反代流程已完成
-  域名   : ${DOMAINS}
-  源站   : ${UPSTREAM}
-  配置文件: ${CADDY_SITES_DIR}/$(site_id "${DOMAINS}").caddy
+[oneproxy] 部署完成
+域名    : ${DOMAINS}
+源站    : ${UPSTREAM}
+配置文件: ${CADDY_SITES_DIR}/$(site_id "${DOMAINS}").caddy
 
-后续如果要新增或修改站点，直接重新执行这条命令即可。
-仓库源码不会常驻在服务器，只保留 Caddy 配置和必要依赖。
+以后如果要新增或修改域名，重新执行同一条命令即可。
 EOF
 }
 
 main() {
-  local pm normalized_upstream
+  local pm
 
   parse_args "$@"
   prompt_if_missing
@@ -352,14 +391,18 @@ main() {
     exit 1
   fi
 
-  normalized_upstream="$(normalize_upstream "${UPSTREAM}")"
-  UPSTREAM="${normalized_upstream}"
+  UPSTREAM="$(normalize_upstream "${UPSTREAM}")"
+
+  section "部署信息"
+  echo "域名: ${DOMAINS}"
+  echo "源站: ${UPSTREAM}"
+  echo "系统: ${pm}"
 
   install_base_packages "${pm}"
-  install_node "${pm}"
   install_caddy "${pm}"
   ensure_caddy_layout
   write_site_config "${DOMAINS}" "${UPSTREAM}"
+  validate_caddy
   reload_caddy
   check_domains "${DOMAINS}"
   check_upstream "${UPSTREAM}"

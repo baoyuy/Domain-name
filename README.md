@@ -28,15 +28,14 @@ curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh 
 执行后会按顺序完成：
 
 1. 检测系统包管理器
-2. 检测并安装 `curl`、`git`
-3. 检测并安装 `node`
-4. 检测并安装 `caddy`
-5. 询问或读取域名、源站地址
-6. 自动写入 Caddy 反代配置
-7. 自动重启 Caddy
-8. 自动检查域名是否解析到本机
-9. 自动检查源站是否可连通
-10. 清理旧版本残留的项目目录和无用文件
+2. 检测并安装 `curl`、`gnupg` 等基础依赖
+3. 检测并安装 `caddy`
+4. 询问或读取域名、源站地址
+5. 自动写入 Caddy 反代配置
+6. 先校验配置，再启动 Caddy
+7. 自动检查域名是否解析到本机
+8. 自动检查源站是否可连通
+9. 清理旧版本残留的项目目录和无用文件
 
 ## 执行结果
 
@@ -69,5 +68,6 @@ curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh 
 ## 说明
 
 - 域名必须先解析到服务器公网 IP，Caddy 才能正常申请 HTTPS 证书
+- 如果 Caddy 配置有问题，脚本会直接输出 `caddy validate` 和 `systemctl/journalctl` 的错误摘要
 - 如果源站没启动、端口没监听、或防火墙没放行，脚本会提示异常
 - 如果你后续还要新增别的域名，重新执行同一条命令即可
