@@ -8,6 +8,7 @@ LEGACY_BIN="/usr/local/bin/oneproxy"
 
 DOMAINS="${ONEPROXY_DOMAIN:-}"
 UPSTREAM="${ONEPROXY_UPSTREAM:-}"
+EMAIL="${ONEPROXY_EMAIL:-}"
 TTY_FD=""
 
 export DEBIAN_FRONTEND=noninteractive
@@ -34,15 +35,16 @@ has_cmd() {
 usage() {
   cat <<'EOF'
 用法:
-  bash install.sh --domain example.com --to 127.0.0.1:3000
+  bash install.sh --domain example.com --to 127.0.0.1:3000 --email admin@example.com
 
 参数:
   --domain, -d    反代域名，多个域名用英文逗号分隔
   --to, -t        源站地址，例如 127.0.0.1:3000 或 http://127.0.0.1:3000
+  --email, -e     可选，HTTPS 证书通知邮箱
   --help, -h      显示帮助
 
 示例:
-  curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000
+  curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000 --email admin@example.com
 EOF
 }
 
@@ -55,6 +57,10 @@ parse_args() {
         ;;
       --to|-t)
         UPSTREAM="${2:-}"
+        shift 2
+        ;;
+      --email|-e)
+        EMAIL="${2:-}"
         shift 2
         ;;
       --help|-h)
@@ -82,7 +88,7 @@ ensure_tty_input() {
   fi
 
   echo "当前执行环境无法交互输入，请改用参数方式执行：" >&2
-  echo "curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000" >&2
+  echo "curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh | sudo bash -s -- --domain example.com --to 127.0.0.1:3000 --email admin@example.com" >&2
   exit 1
 }
 
@@ -90,14 +96,18 @@ prompt_if_missing() {
   ensure_tty_input
 
   echo
-  echo "[oneproxy] 将创建一个 Nginx 反代站点"
+  echo "[oneproxy] 将创建一个 Nginx HTTPS 反代站点"
 
   if [[ -z "${DOMAINS}" ]]; then
-    read -r -u "${TTY_FD}" -p "1/2 请输入反代域名: " DOMAINS
+    read -r -u "${TTY_FD}" -p "1/3 请输入反代域名: " DOMAINS
   fi
 
   if [[ -z "${UPSTREAM}" ]]; then
-    read -r -u "${TTY_FD}" -p "2/2 请输入源站地址，例如 127.0.0.1:3000: " UPSTREAM
+    read -r -u "${TTY_FD}" -p "2/3 请输入源站地址，例如 127.0.0.1:3000: " UPSTREAM
+  fi
+
+  if [[ -z "${EMAIL}" ]]; then
+    read -r -u "${TTY_FD}" -p "3/3 请输入邮箱，可直接回车跳过: " EMAIL
   fi
 }
 
@@ -128,20 +138,20 @@ install_base_packages() {
   if [[ "$pm" == "apt" ]]; then
     log "更新软件源"
     apt-get update -qq
-    log "安装基础依赖: curl"
-    apt_quiet_install curl
+    log "安装基础依赖: curl ca-certificates"
+    apt_quiet_install curl ca-certificates
     return
   fi
 
   if [[ "$pm" == "dnf" ]]; then
-    log "安装基础依赖: curl"
-    dnf install -y -q curl >/dev/null
+    log "安装基础依赖: curl ca-certificates"
+    dnf install -y -q curl ca-certificates >/dev/null
     return
   fi
 
   if [[ "$pm" == "yum" ]]; then
-    log "安装基础依赖: curl"
-    yum install -y -q curl >/dev/null
+    log "安装基础依赖: curl ca-certificates"
+    yum install -y -q curl ca-certificates >/dev/null
     return
   fi
 
@@ -172,6 +182,33 @@ install_nginx() {
 
   if [[ "$pm" == "yum" ]]; then
     yum install -y -q nginx >/dev/null
+    return
+  fi
+}
+
+install_certbot() {
+  local pm="$1"
+  section "检查 Certbot"
+
+  if has_cmd certbot; then
+    log "Certbot 已安装: $(certbot --version 2>/dev/null | head -n 1)"
+  else
+    log "检测到未安装 Certbot，开始安装"
+  fi
+
+  if [[ "$pm" == "apt" ]]; then
+    apt_quiet_install certbot python3-certbot-nginx
+    return
+  fi
+
+  if [[ "$pm" == "dnf" ]]; then
+    dnf install -y -q certbot python3-certbot-nginx >/dev/null
+    return
+  fi
+
+  if [[ "$pm" == "yum" ]]; then
+    yum install -y -q epel-release >/dev/null || true
+    yum install -y -q certbot python3-certbot-nginx >/dev/null
     return
   fi
 }
@@ -236,7 +273,7 @@ EOF
 }
 
 validate_nginx() {
-  section "校验配置"
+  section "校验 Nginx 配置"
   if nginx -t >/tmp/oneproxy_nginx_test.out 2>/tmp/oneproxy_nginx_test.err; then
     log "Nginx 配置校验通过"
     rm -f /tmp/oneproxy_nginx_test.out /tmp/oneproxy_nginx_test.err
@@ -270,14 +307,16 @@ summarize_nginx_failure() {
   journal_text="$(journalctl --no-pager -u nginx -n 20 2>&1 || true)"
   combined="${status_text}"$'\n'"${journal_text}"
 
-  if echo "${combined}" | grep -qi "bind() to 0.0.0.0:80 failed"; then
-    echo "[oneproxy] Nginx 启动失败：80 端口已被其他程序占用。" >&2
+  if echo "${combined}" | grep -Eqi "bind\(\) to .*:80 failed|bind\(\) to .*:443 failed|address already in use"; then
+    echo "[oneproxy] Nginx 启动失败：80 或 443 端口已被其他程序占用。" >&2
     echo "建议处理：" >&2
-    echo "- 查看是谁占用了 80 端口" >&2
+    echo "- 查看是谁占用了 80/443 端口" >&2
     echo "- 停掉旧的 Nginx、Apache、宝塔或其他 Web 服务后重试" >&2
     echo >&2
     echo "[80 端口占用情况]" >&2
-    detect_port_owner 80 >&2 || echo "无法自动识别占用进程，请手动执行: ss -ltnp | grep :80" >&2
+    detect_port_owner 80 >&2 || true
+    echo "[443 端口占用情况]" >&2
+    detect_port_owner 443 >&2 || true
     return
   fi
 
@@ -293,7 +332,7 @@ summarize_nginx_failure() {
 }
 
 reload_nginx() {
-  section "启动服务"
+  section "启动 Nginx"
   systemctl enable nginx >/dev/null 2>&1 || true
 
   if systemctl restart nginx; then
@@ -317,6 +356,24 @@ get_local_ips() {
   hostname -I 2>/dev/null | tr ' ' '\n' | sed '/^$/d'
 }
 
+get_public_ips() {
+  {
+    curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true
+    echo
+    curl -4 -fsS --max-time 5 https://ipv4.icanhazip.com 2>/dev/null || true
+    echo
+    curl -6 -fsS --max-time 5 https://api64.ipify.org 2>/dev/null || true
+    echo
+  } | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | sort -u
+}
+
+collect_server_ips() {
+  {
+    get_local_ips
+    get_public_ips
+  } | sed '/^$/d' | sort -u
+}
+
 resolve_domain() {
   local domain="$1"
   if has_cmd getent; then
@@ -335,9 +392,9 @@ resolve_domain() {
 
 check_domains() {
   local domains_csv="$1"
-  local local_ips resolved ok
+  local server_ips resolved ok
   local has_failure="0"
-  local_ips="$(get_local_ips)"
+  server_ips="$(collect_server_ips)"
 
   section "检查域名解析"
   while IFS= read -r domain; do
@@ -345,10 +402,10 @@ check_domains() {
     resolved="$(resolve_domain "${domain}" || true)"
     ok="no"
 
-    if [[ -n "${resolved}" && -n "${local_ips}" ]]; then
+    if [[ -n "${resolved}" && -n "${server_ips}" ]]; then
       while IFS= read -r ip; do
         [[ -z "${ip}" ]] && continue
-        if echo "${local_ips}" | grep -Fxq "${ip}"; then
+        if echo "${server_ips}" | grep -Fxq "${ip}"; then
           ok="yes"
           break
         fi
@@ -357,7 +414,7 @@ check_domains() {
 
     echo "域名: ${domain}"
     echo "解析: ${resolved:-未解析到 IP}"
-    echo "本机: ${local_ips:-无法获取本机 IP}"
+    echo "服务器 IP: ${server_ips:-无法获取服务器 IP}"
     if [[ "${ok}" == "yes" ]]; then
       echo "结果: 正常"
     else
@@ -379,13 +436,65 @@ check_upstream() {
     sed -n '1p' /tmp/oneproxy_upstream_check.out || true
     rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
     return 0
-  else
-    echo "[oneproxy] 源站检测失败" >&2
-    sed -n '1,5p' /tmp/oneproxy_upstream_check.err >&2 || true
-    echo "请确认源站已启动、端口已监听、协议填写正确。" >&2
-    rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
-    return 1
   fi
+
+  echo "[oneproxy] 源站检测失败" >&2
+  sed -n '1,5p' /tmp/oneproxy_upstream_check.err >&2 || true
+  echo "请确认源站已启动、端口已监听、协议填写正确。" >&2
+  rm -f /tmp/oneproxy_upstream_check.out /tmp/oneproxy_upstream_check.err
+  return 1
+}
+
+build_certbot_domain_args() {
+  while IFS= read -r domain; do
+    [[ -n "${domain}" ]] && printf -- "-d %s " "${domain}"
+  done < <(normalize_domains "${DOMAINS}")
+}
+
+summarize_certbot_failure() {
+  local output
+  output="$(cat /tmp/oneproxy_certbot.err 2>/dev/null || true)"
+
+  if echo "${output}" | grep -qi "NXDOMAIN"; then
+    echo "[oneproxy] HTTPS 申请失败：域名不存在或 DNS 记录未生效。" >&2
+    return
+  fi
+
+  if echo "${output}" | grep -Eqi "Timeout during connect|Connection refused|unauthorized|Invalid response"; then
+    echo "[oneproxy] HTTPS 申请失败：Let's Encrypt 无法通过 80 端口验证当前域名。" >&2
+    echo "建议处理：" >&2
+    echo "- 确认域名已经解析到当前服务器公网 IP" >&2
+    echo "- 确认 80 端口已对外放行" >&2
+    echo "- 确认 CDN 或代理没有拦截验证请求" >&2
+    return
+  fi
+
+  echo "[oneproxy] HTTPS 申请失败。" >&2
+}
+
+enable_https() {
+  local certbot_domain_args certbot_email_args
+  section "申请 HTTPS 证书"
+
+  certbot_domain_args="$(build_certbot_domain_args)"
+  if [[ -n "${EMAIL}" ]]; then
+    certbot_email_args="--email ${EMAIL}"
+  else
+    certbot_email_args="--register-unsafely-without-email"
+  fi
+
+  if eval "certbot --nginx --redirect --non-interactive --agree-tos ${certbot_email_args} ${certbot_domain_args}" >/tmp/oneproxy_certbot.out 2>/tmp/oneproxy_certbot.err; then
+    log "HTTPS 证书申请成功，已自动配置 80 -> 443"
+    rm -f /tmp/oneproxy_certbot.out /tmp/oneproxy_certbot.err
+    return
+  fi
+
+  summarize_certbot_failure
+  echo >&2
+  echo "[oneproxy] 下面是 Certbot 原始输出：" >&2
+  sed -n '1,40p' /tmp/oneproxy_certbot.err >&2 || true
+  rm -f /tmp/oneproxy_certbot.out /tmp/oneproxy_certbot.err
+  exit 1
 }
 
 cleanup_legacy_files() {
@@ -401,7 +510,8 @@ print_finish() {
 [oneproxy] 部署完成
 域名    : ${DOMAINS}
 源站    : ${UPSTREAM}
-配置文件: ${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf
+HTTP 配置: ${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf
+HTTPS   : 已开启
 
 以后如果要新增或修改域名，重新执行同一条命令即可。
 EOF
@@ -410,7 +520,7 @@ EOF
 print_partial_failure() {
   cat <<EOF
 
-[oneproxy] 配置已写入，但部署未通过最终检查
+[oneproxy] HTTP 配置已写入，但部署未通过最终检查
 域名    : ${DOMAINS}
 源站    : ${UPSTREAM}
 配置文件: ${NGINX_SITES_AVAILABLE}/$(site_id "${DOMAINS}").conf
@@ -450,27 +560,34 @@ main() {
   echo "域名: ${DOMAINS}"
   echo "源站: ${UPSTREAM}"
   echo "系统: ${pm}"
+  echo "邮箱: ${EMAIL:-未提供，将使用无邮箱模式申请证书}"
 
   install_base_packages "${pm}"
   install_nginx "${pm}"
+  install_certbot "${pm}"
   ensure_nginx_layout
   write_site_config "${DOMAINS}" "${UPSTREAM}"
   validate_nginx
   reload_nginx
+
   if check_domains "${DOMAINS}"; then
     domain_check_ok="1"
   fi
   if check_upstream "${UPSTREAM}"; then
     upstream_check_ok="1"
   fi
-  cleanup_legacy_files
 
-  if [[ "${domain_check_ok}" == "1" && "${upstream_check_ok}" == "1" ]]; then
-    print_finish
-  else
+  if [[ "${domain_check_ok}" != "1" || "${upstream_check_ok}" != "1" ]]; then
+    cleanup_legacy_files
     print_partial_failure >&2
     exit 1
   fi
+
+  enable_https
+  validate_nginx
+  reload_nginx
+  cleanup_legacy_files
+  print_finish
 
   if [[ -n "${TTY_FD}" ]]; then
     exec 3<&-
