@@ -37,7 +37,11 @@ curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh 
 11. 自动配置 `80 -> 443`
 12. 清理旧版本残留的项目目录和无用文件
 
-如果域名解析检查或源站连通性检查失败，脚本会返回失败状态，也不会写入 HTTP 配置。
+## 失败与回滚
+
+- 如果域名解析检查失败，不会写入 HTTP 配置
+- 如果源站连通性检查失败，不会写入 HTTP 配置
+- 如果 HTTPS 证书申请失败，会自动回滚刚写入的 HTTP 配置，避免残留半成品站点
 
 ## 执行结果
 
@@ -60,7 +64,7 @@ curl -fsSL https://raw.githubusercontent.com/baoyuy/Domain-name/main/install.sh 
 
 ## 说明
 
-- 当前脚本默认先写入 `80` 端口 Nginx 配置，再通过 Certbot 自动签发证书并切到 HTTPS
+- 当前脚本会先做校验，再写入 `80` 端口 Nginx 配置，再通过 Certbot 自动签发证书并切到 HTTPS
 - 域名校验会同时参考服务器内网 IP 和公网 IP，避免 NAT 或容器环境下误判
 - 如果 Nginx 配置或启动有问题，脚本会优先给出中文错误归纳和建议，再附上 `systemctl/journalctl` 原始摘要
 - 如果 HTTPS 申请失败，脚本会输出 Certbot 的友好错误提示和原始错误摘要

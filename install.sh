@@ -276,6 +276,17 @@ ensure_nginx_layout() {
   mkdir -p "${NGINX_SITES_AVAILABLE}" "${NGINX_SITES_ENABLED}"
 }
 
+remove_site_config() {
+  local site_name file_path enabled_path
+
+  site_name="$(site_id "${DOMAINS}")"
+  file_path="${NGINX_SITES_AVAILABLE}/${site_name}.conf"
+  enabled_path="${NGINX_SITES_ENABLED}/${site_name}.conf"
+
+  rm -f "${enabled_path}" 2>/dev/null || true
+  rm -f "${file_path}" 2>/dev/null || true
+}
+
 write_site_config() {
   local domains_csv="$1"
   local upstream="$2"
@@ -525,6 +536,16 @@ enable_https() {
   fi
 
   summarize_certbot_failure
+  warn "正在回滚刚写入的 HTTP 配置"
+  remove_site_config
+  if nginx -t >/tmp/oneproxy_nginx_rollback.out 2>/tmp/oneproxy_nginx_rollback.err; then
+    systemctl reload nginx >/dev/null 2>&1 || true
+    success "HTTP 配置已回滚"
+  else
+    error "回滚后 Nginx 配置校验失败，请手动检查。"
+    sed -n '1,20p' /tmp/oneproxy_nginx_rollback.err >&2 || true
+  fi
+  rm -f /tmp/oneproxy_nginx_rollback.out /tmp/oneproxy_nginx_rollback.err
   echo >&2
   warn "下面是 Certbot 原始输出："
   sed -n '1,40p' /tmp/oneproxy_certbot.err >&2 || true
