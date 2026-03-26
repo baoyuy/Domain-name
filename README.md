@@ -73,3 +73,5 @@ sudo bash uninstall.sh your-domain.com
 - HTTPS 申请依赖 80 端口可被 Let’s Encrypt 访问
 - 最终访问验证失败时，脚本会给出警告，但不会自动删除已经成功配置的 HTTPS 站点
 - 当前仓库主入口就是仓库根目录下的 `install.sh`，不再依赖旧 Node 方案
+
+- Linux.do 社区 [<sup>1</sup>](https://linux.do/)
