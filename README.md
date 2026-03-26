@@ -74,4 +74,18 @@ sudo bash uninstall.sh your-domain.com
 - 最终访问验证失败时，脚本会给出警告，但不会自动删除已经成功配置的 HTTPS 站点
 - 当前仓库主入口就是仓库根目录下的 `install.sh`，不再依赖旧 Node 方案
 
-- Linux.do 社区 [<sup>1</sup>](https://linux.do/)
+## 致谢
+
+如果这个项目对你有帮助，欢迎点一个 Star！
+
+<div align="center">
+  <p><strong>感谢 LinuxDo 社区的支持！</strong></p>
+  <p>
+    <a href="https://linux.do/" target="_blank">
+      <img src="https://img.shields.io/badge/COMMUNITY-555555?style=for-the-badge" alt="Community">
+    </a>
+    <a href="https://linux.do/" target="_blank">
+      <img src="https://img.shields.io/badge/LINUXDO-2d74da?style=for-the-badge" alt="LinuxDo">
+    </a>
+  </p>
+</div>
