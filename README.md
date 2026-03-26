@@ -75,17 +75,13 @@ sudo bash uninstall.sh your-domain.com
 - 当前仓库主入口就是仓库根目录下的 `install.sh`，不再依赖旧 Node 方案
 
 ## 致谢
-
 如果这个项目对你有帮助，欢迎点一个 Star！
-
 <div align="center">
-  <p><strong>感谢 LinuxDo 社区的支持！</strong></p>
-  <p>
-    <a href="https://linux.do/" target="_blank">
-      <img src="https://img.shields.io/badge/COMMUNITY-555555?style=for-the-badge" alt="Community">
-    </a>
-    <a href="https://linux.do/" target="_blank">
-      <img src="https://img.shields.io/badge/LINUXDO-2d74da?style=for-the-badge" alt="LinuxDo">
-    </a>
-  </p>
+### 感谢 LinuxDo 社区的支持！
+<a href="https://linux.do/" target="_blank">
+  <img src="https://img.shields.io/badge/COMMUNITY-555555?style=for-the-badge" alt="Community">
+</a>
+<a href="https://linux.do/" target="_blank">
+  <img src="https://img.shields.io/badge/LINUXDO-2d74da?style=for-the-badge" alt="LinuxDo">
+</a>
 </div>
